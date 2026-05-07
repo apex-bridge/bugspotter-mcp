@@ -8,6 +8,7 @@ const addFormats: AddFormatsFn =
   (addFormatsImport as unknown as AddFormatsFn);
 import { TOOLS } from '../src/tools/index.js';
 import { redactArgs, redactPii } from '../src/instrumentation/logger.js';
+import { makeExcerpt } from '../src/tools/search-bugs.js';
 
 const ajv = new Ajv({ allErrors: true, strict: false });
 addFormats(ajv);
@@ -99,6 +100,47 @@ describe('ask schema', () => {
 
   it('rejects temperature outside [0, 2]', () => {
     expect(validate({ question: 'x', temperature: 5 })).toBe(false);
+  });
+});
+
+describe('makeExcerpt — whitespace + word-boundary handling', () => {
+  it('collapses runs of whitespace (newlines, tabs, double-spaces) into single spaces', async () => {
+const messy = 'Steps to repro:\n\n1. Foo\n2.   Bar\t\tBaz';
+    expect(makeExcerpt(messy)).toBe('Steps to repro: 1. Foo 2. Bar Baz');
+  });
+
+  it('cuts on the last word boundary when one exists in the final ~40 chars', async () => {
+const filler = 'a '.repeat(110); // 220 chars
+    const tail = 'and then the user clicks the button very gently here';
+    const input = filler + tail;
+    const out = makeExcerpt(input);
+    expect(out.endsWith('…')).toBe(true);
+    expect(out.length).toBeLessThanOrEqual(241);
+    // Word-boundary check: the body (sans ellipsis) must be a prefix of the
+    // whitespace-collapsed input, AND the position right after it in the
+    // input must be whitespace (or end-of-string). That's the contract of
+    // "cut at the last space".
+    const body = out.slice(0, -1);
+    const inputFlat = input.replace(/\s+/g, ' ').trim();
+    expect(inputFlat.startsWith(body)).toBe(true);
+    expect(body.length === inputFlat.length || inputFlat[body.length] === ' ').toBe(true);
+  });
+
+  it('hard-cuts at EXCERPT_MAX when no space is in the final ~40 chars', async () => {
+// "word " repeated for 200 chars, then 50 chars of solid text — no space
+    // in the last 40 chars before char 240, so we expect a hard cut.
+    const noSpaceTail = 'A'.repeat(50);
+    const prefix = 'word '.repeat(40); // 200 chars
+    const out = makeExcerpt(prefix + noSpaceTail);
+    expect(out.endsWith('…')).toBe(true);
+    // Hard-cut puts ellipsis right after EXCERPT_MAX chars, total = 241.
+    expect(out.length).toBe(241);
+  });
+
+  it('returns short input verbatim with no trimming or ellipsis', async () => {
+expect(makeExcerpt('Login button broken on Safari 17.')).toBe(
+      'Login button broken on Safari 17.'
+    );
   });
 });
 

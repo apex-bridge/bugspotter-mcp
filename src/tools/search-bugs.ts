@@ -22,12 +22,29 @@ const SEARCH_FIELDS = [
 ] as const;
 const EXCERPT_MAX = 240;
 
+// Pick a usable string identifier from an upstream value. Returns the
+// trimmed string for non-empty/non-whitespace strings, the stringified
+// form of finite numbers, or undefined for everything else (null, '',
+// '   ', NaN, object, boolean, …). Used twice via `??` so the two
+// upstream id fields fall through cleanly on the first unusable value.
+function pickId(v: unknown): string | undefined {
+  if (typeof v === 'string') {
+    const trimmed = v.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+  return undefined;
+}
+
 // Build a clean excerpt: collapse runs of whitespace (newlines, tabs,
 // double-spaces from "Steps to reproduce:\n\n1. …" style descriptions)
 // into single spaces, then cut on a word boundary if one exists in the
 // last ~40 chars of the window. Keeps the excerpt readable to the agent
 // without wasting characters on \n\n.
-function makeExcerpt(s: string): string {
+//
+// Exported for direct unit testing — the integration tests only cover
+// length, not the whitespace-collapse / word-boundary logic.
+export function makeExcerpt(s: string): string {
   const flat = s.replace(/\s+/g, ' ').trim();
   if (flat.length <= EXCERPT_MAX) return flat;
   const cut = flat.slice(0, EXCERPT_MAX);
@@ -40,11 +57,17 @@ function thinSearchHit(hit: unknown): Record<string, unknown> {
   const src = hit as Record<string, unknown>;
   const out: Record<string, unknown> = {};
 
-  // Normalize the bug identifier: prefer upstream `bug_id`, fall back to `id`.
-  // Either may exist depending on which intelligence endpoint variant served
-  // the response; agents pass `id` straight to get_bug.
-  const id = src.bug_id ?? src.id;
-  if (typeof id === 'string') out.id = id;
+  // Normalize the bug identifier. Either `bug_id` or `id` may carry the
+  // identifier — depends on which intelligence endpoint variant served us.
+  //
+  // The naive `??` between raw values has a subtle hole: it only coalesces
+  // on `null`/`undefined`, so `{ bug_id: '', id: 'real-id' }` would resolve
+  // `rawId = ''` and drop the perfectly good `id` next to it. Picking each
+  // field through pickId() first lets `??` fall through cleanly when the
+  // first field is unusable (empty/whitespace/wrong-type) but a real value
+  // sits in the second.
+  const id = pickId(src.bug_id) ?? pickId(src.id);
+  if (id !== undefined) out.id = id;
 
   for (const k of SEARCH_FIELDS) {
     if (k in src) out[k] = src[k];
