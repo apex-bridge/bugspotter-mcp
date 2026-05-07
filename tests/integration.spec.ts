@@ -243,6 +243,28 @@ describe('end-to-end tool dispatch against mocked BugSpotter', () => {
     expect(hits[1]).not.toHaveProperty('bug_id');
   });
 
+  it('search_bugs coerces numeric bug_id/id to a string so get_bug stays callable', async () => {
+    nextResponse = {
+      status: 200,
+      body: {
+        results: [
+          { bug_id: 12345, title: 't', status: 'open', priority: 'low' },
+          { id: 67890, title: 't', status: 'open', priority: 'low' },
+          // Reject things that aren't string-or-finite-number.
+          { bug_id: null, id: { nested: 'object' }, title: 'no usable id', status: 'open', priority: 'low' },
+          { bug_id: Number.NaN, title: 'NaN id', status: 'open', priority: 'low' },
+        ],
+      },
+    };
+    const ctx = await makeCtx();
+    const result = await tool('search_bugs').handler({ query: 'x' }, ctx);
+    const hits = (result.data as { results: Record<string, unknown>[] }).results;
+    expect(hits[0]!.id).toBe('12345');
+    expect(hits[1]!.id).toBe('67890');
+    expect(hits[2]).not.toHaveProperty('id');
+    expect(hits[3]).not.toHaveProperty('id');
+  });
+
   it('list_bugs preserves upstream pagination metadata through projection', async () => {
     nextResponse = {
       status: 200,

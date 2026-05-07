@@ -27,7 +27,10 @@ const EXCERPT_MAX = 240;
 // into single spaces, then cut on a word boundary if one exists in the
 // last ~40 chars of the window. Keeps the excerpt readable to the agent
 // without wasting characters on \n\n.
-function makeExcerpt(s: string): string {
+//
+// Exported for direct unit testing — the integration tests only cover
+// length, not the whitespace-collapse / word-boundary logic.
+export function makeExcerpt(s: string): string {
   const flat = s.replace(/\s+/g, ' ').trim();
   if (flat.length <= EXCERPT_MAX) return flat;
   const cut = flat.slice(0, EXCERPT_MAX);
@@ -43,8 +46,18 @@ function thinSearchHit(hit: unknown): Record<string, unknown> {
   // Normalize the bug identifier: prefer upstream `bug_id`, fall back to `id`.
   // Either may exist depending on which intelligence endpoint variant served
   // the response; agents pass `id` straight to get_bug.
-  const id = src.bug_id ?? src.id;
-  if (typeof id === 'string') out.id = id;
+  //
+  // Coerce numeric ids to strings — REST contracts evolve, and a numeric
+  // bug_id silently dropping the entire `id` field is a "agent silently
+  // broken" failure mode (the get_bug call on the next step has nothing
+  // to call with). Strings pass through; finite numbers are stringified;
+  // everything else (null, object, boolean, NaN, …) is rejected.
+  const rawId = src.bug_id ?? src.id;
+  if (typeof rawId === 'string' && rawId) {
+    out.id = rawId;
+  } else if (typeof rawId === 'number' && Number.isFinite(rawId)) {
+    out.id = String(rawId);
+  }
 
   for (const k of SEARCH_FIELDS) {
     if (k in src) out[k] = src[k];
