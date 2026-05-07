@@ -113,6 +113,160 @@ describe('end-to-end tool dispatch against mocked BugSpotter', () => {
     expect(received[0]!.url).not.toContain('from_date');
   });
 
+  it('list_bugs strips heavy fields and returns a thin projection', async () => {
+    const fatBug = {
+      id: 'bug-1',
+      title: 'Login button does nothing',
+      status: 'open',
+      priority: 'high',
+      created_at: '2026-05-05T10:00:00Z',
+      project_id: PROJECT,
+      // Heavy fields that should be dropped — these are what blow context budgets in prod.
+      description: 'x'.repeat(10_000),
+      metadata: { browser: { ua: 'y'.repeat(2000) } },
+      console_errors: Array(50).fill({ msg: 'TypeError: undefined' }),
+      network_logs: Array(40).fill({ url: 'https://api/...', status: 500 }),
+      stack_trace: 'a'.repeat(8000),
+      replay_url: 'https://replays/...',
+    };
+    nextResponse = { status: 200, body: { data: [fatBug, fatBug, fatBug] } };
+    const ctx = await makeCtx();
+    const result = await tool('list_bugs').handler({ limit: 3 }, ctx);
+    const data = result.data as { data: Record<string, unknown>[] };
+    expect(data.data).toHaveLength(3);
+    for (const b of data.data) {
+      expect(Object.keys(b).sort()).toEqual(
+        ['created_at', 'id', 'priority', 'project_id', 'status', 'title']
+      );
+      expect(b).not.toHaveProperty('description');
+      expect(b).not.toHaveProperty('metadata');
+      expect(b).not.toHaveProperty('console_errors');
+      expect(b).not.toHaveProperty('network_logs');
+      expect(b).not.toHaveProperty('stack_trace');
+    }
+    // Sanity-check the size collapse: thin record < 200 bytes; fat record > 25KB.
+    const projectedBytes = Buffer.byteLength(JSON.stringify(data.data[0]));
+    expect(projectedBytes).toBeLessThan(200);
+  });
+
+  it('search_bugs strips heavy fields and synthesizes excerpt from description', async () => {
+    const longDescription = 'Connection reset on POST /orders. ' + 'x'.repeat(2000);
+    const fatHit = {
+      id: 'bug-2',
+      title: 'POST /orders flaky',
+      status: 'open',
+      priority: 'high',
+      score: 0.92,
+      project_id: PROJECT,
+      description: longDescription,
+      console_errors: Array(20).fill({ msg: 'noise' }),
+      stack_trace: 'z'.repeat(5000),
+    };
+    nextResponse = { status: 200, body: { results: [fatHit] } };
+    const ctx = await makeCtx();
+    const result = await tool('search_bugs').handler({ query: 'orders flaky' }, ctx);
+    const data = result.data as { results: Record<string, unknown>[] };
+    expect(data.results).toHaveLength(1);
+    const hit = data.results[0]!;
+    expect(hit).not.toHaveProperty('description');
+    expect(hit).not.toHaveProperty('console_errors');
+    expect(hit).not.toHaveProperty('stack_trace');
+    expect(hit.excerpt).toBeTypeOf('string');
+    expect((hit.excerpt as string).length).toBeLessThanOrEqual(241);
+    expect(hit.score).toBe(0.92);
+    expect(hit.title).toBe('POST /orders flaky');
+  });
+
+  it('search_bugs synthesizes excerpt when upstream returns excerpt: null/empty/whitespace', async () => {
+    const ctx = await makeCtx();
+    for (const badExcerpt of [null, '', '   '] as const) {
+      received = [];
+      nextResponse = {
+        status: 200,
+        body: {
+          results: [
+            {
+              id: 'bug-x',
+              title: 't',
+              status: 'open',
+              priority: 'high',
+              excerpt: badExcerpt,
+              description: 'A real description that should become the excerpt.',
+            },
+          ],
+        },
+      };
+      const result = await tool('search_bugs').handler({ query: 'x' }, ctx);
+      const hit = (result.data as { results: Record<string, unknown>[] }).results[0]!;
+      expect(hit.excerpt).toBe('A real description that should become the excerpt.');
+    }
+  });
+
+  it('search_bugs drops null upstream excerpt when description is also unusable', async () => {
+    nextResponse = {
+      status: 200,
+      body: {
+        results: [
+          { id: 'b', title: 't', status: 'open', priority: 'low', excerpt: null },
+          { id: 'c', title: 't', status: 'open', priority: 'low', excerpt: '   ', description: '\n  \t' },
+          { id: 'd', title: 't', status: 'open', priority: 'low', excerpt: '' },
+        ],
+      },
+    };
+    const ctx = await makeCtx();
+    const result = await tool('search_bugs').handler({ query: 'x' }, ctx);
+    const hits = (result.data as { results: Record<string, unknown>[] }).results;
+    // No usable excerpt + no usable description = no excerpt key at all.
+    // The bad upstream value must not leak through to the agent.
+    for (const h of hits) {
+      expect(h).not.toHaveProperty('excerpt');
+    }
+  });
+
+  it('search_bugs normalizes id from upstream bug_id and drops the duplicate field', async () => {
+    nextResponse = {
+      status: 200,
+      body: {
+        results: [
+          { bug_id: 'BUG-42', title: 't', status: 'open', priority: 'low' },
+          { id: 'BUG-43', title: 't2', status: 'open', priority: 'low' },
+        ],
+      },
+    };
+    const ctx = await makeCtx();
+    const result = await tool('search_bugs').handler({ query: 'x' }, ctx);
+    const hits = (result.data as { results: Record<string, unknown>[] }).results;
+    expect(hits[0]!.id).toBe('BUG-42');
+    expect(hits[1]!.id).toBe('BUG-43');
+    // bug_id is no longer kept as a separate field — agents pass result.id to get_bug.
+    expect(hits[0]).not.toHaveProperty('bug_id');
+    expect(hits[1]).not.toHaveProperty('bug_id');
+  });
+
+  it('list_bugs preserves upstream pagination metadata through projection', async () => {
+    nextResponse = {
+      status: 200,
+      body: {
+        data: [
+          {
+            id: 'b1',
+            title: 't',
+            status: 'open',
+            priority: 'low',
+            created_at: '2026-05-01T00:00:00Z',
+            project_id: PROJECT,
+          },
+        ],
+        pagination: { page: 2, per_page: 10, total: 95, total_pages: 10 },
+      },
+    };
+    const ctx = await makeCtx();
+    const result = await tool('list_bugs').handler({ limit: 10 }, ctx);
+    const data = result.data as { data: unknown[]; pagination: Record<string, number> };
+    expect(data.pagination).toEqual({ page: 2, per_page: 10, total: 95, total_pages: 10 });
+    expect(data.data).toHaveLength(1);
+  });
+
   it('update_bug_status renames note to resolution_notes in the PATCH body', async () => {
     const ctx = await makeCtx();
     await tool('update_bug_status').handler(

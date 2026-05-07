@@ -7,10 +7,68 @@ interface SearchArgs {
   limit?: number;
 }
 
+// Note: `id` is normalized below from upstream's `bug_id ?? id` so callers
+// always pass `result.id` straight to get_bug / find_similar — no guessing
+// between the two names depending on which intelligence variant served us.
+const SEARCH_FIELDS = [
+  'title',
+  'status',
+  'priority',
+  'created_at',
+  'project_id',
+  'excerpt',
+  'score',
+  'similarity',
+] as const;
+const EXCERPT_MAX = 240;
+
+// Build a clean excerpt: collapse runs of whitespace (newlines, tabs,
+// double-spaces from "Steps to reproduce:\n\n1. …" style descriptions)
+// into single spaces, then cut on a word boundary if one exists in the
+// last ~40 chars of the window. Keeps the excerpt readable to the agent
+// without wasting characters on \n\n.
+function makeExcerpt(s: string): string {
+  const flat = s.replace(/\s+/g, ' ').trim();
+  if (flat.length <= EXCERPT_MAX) return flat;
+  const cut = flat.slice(0, EXCERPT_MAX);
+  const lastSpace = cut.lastIndexOf(' ');
+  return (lastSpace > EXCERPT_MAX - 40 ? cut.slice(0, lastSpace) : cut) + '…';
+}
+
+function thinSearchHit(hit: unknown): Record<string, unknown> {
+  if (!hit || typeof hit !== 'object') return {};
+  const src = hit as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+
+  // Normalize the bug identifier: prefer upstream `bug_id`, fall back to `id`.
+  // Either may exist depending on which intelligence endpoint variant served
+  // the response; agents pass `id` straight to get_bug.
+  const id = src.bug_id ?? src.id;
+  if (typeof id === 'string') out.id = id;
+
+  for (const k of SEARCH_FIELDS) {
+    if (k in src) out[k] = src[k];
+  }
+
+  // Excerpt handling. Upstream may send a usable excerpt, an unusable one
+  // (null / empty / whitespace-only), or none at all. We want exactly one
+  // outcome: either a clean string, or no `excerpt` key in the projection.
+  // Never pass a null/empty upstream value through to the agent.
+  const hasUsableExcerpt = typeof out.excerpt === 'string' && out.excerpt.trim().length > 0;
+  if (!hasUsableExcerpt) {
+    if (typeof src.description === 'string' && src.description.trim()) {
+      out.excerpt = makeExcerpt(src.description);
+    } else {
+      delete out.excerpt; // load-bearing: drops null/empty/whitespace upstream value
+    }
+  }
+  return out;
+}
+
 export const searchBugs: ToolDefinition<SearchArgs> = {
   name: 'search_bugs',
   description:
-    'Search bugs in a BugSpotter project using natural language. Returns ranked results with title, status, priority, excerpt, and bug_id.',
+    'Search bugs in a BugSpotter project using natural language. Returns thin ranked records — id, title, status, priority, created_at, project_id, excerpt, and score/similarity if upstream provides one — optimized for context budget. For full bug content (description, console errors, network logs, stack trace) follow up with get_bug.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -36,17 +94,18 @@ export const searchBugs: ToolDefinition<SearchArgs> = {
       throw new Error('project_id is required (no BUGSPOTTER_DEFAULT_PROJECT configured).');
     }
     const path = `/api/v1/intelligence/projects/${projectId}/search`;
-    const data = await ctx.client.request<{ results?: unknown[] }>('POST', path, {
+    const upstream = await ctx.client.request<{ results?: unknown[] }>('POST', path, {
       body: {
         query: args.query,
         mode: args.mode ?? 'fast',
         limit: args.limit ?? 10,
       },
     });
+    const hits = Array.isArray(upstream?.results) ? upstream.results.map(thinSearchHit) : [];
     return {
-      data,
-      resultCount: Array.isArray(data?.results) ? data.results.length : null,
+      data: { results: hits },
+      resultCount: hits.length,
       upstreamUrl: `POST ${path}`,
-    } as const;
+    };
   },
 };
