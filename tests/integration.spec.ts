@@ -177,6 +177,75 @@ describe('end-to-end tool dispatch against mocked BugSpotter', () => {
     expect(hit.title).toBe('POST /orders flaky');
   });
 
+  it('search_bugs synthesizes excerpt when upstream returns excerpt: null/empty/whitespace', async () => {
+    const ctx = await makeCtx();
+    for (const badExcerpt of [null, '', '   '] as const) {
+      received = [];
+      nextResponse = {
+        status: 200,
+        body: {
+          results: [
+            {
+              id: 'bug-x',
+              title: 't',
+              status: 'open',
+              priority: 'high',
+              excerpt: badExcerpt,
+              description: 'A real description that should become the excerpt.',
+            },
+          ],
+        },
+      };
+      const result = await tool('search_bugs').handler({ query: 'x' }, ctx);
+      const hit = (result.data as { results: Record<string, unknown>[] }).results[0]!;
+      expect(hit.excerpt).toBe('A real description that should become the excerpt.');
+    }
+  });
+
+  it('search_bugs normalizes id from upstream bug_id and drops the duplicate field', async () => {
+    nextResponse = {
+      status: 200,
+      body: {
+        results: [
+          { bug_id: 'BUG-42', title: 't', status: 'open', priority: 'low' },
+          { id: 'BUG-43', title: 't2', status: 'open', priority: 'low' },
+        ],
+      },
+    };
+    const ctx = await makeCtx();
+    const result = await tool('search_bugs').handler({ query: 'x' }, ctx);
+    const hits = (result.data as { results: Record<string, unknown>[] }).results;
+    expect(hits[0]!.id).toBe('BUG-42');
+    expect(hits[1]!.id).toBe('BUG-43');
+    // bug_id is no longer kept as a separate field — agents pass result.id to get_bug.
+    expect(hits[0]).not.toHaveProperty('bug_id');
+    expect(hits[1]).not.toHaveProperty('bug_id');
+  });
+
+  it('list_bugs preserves upstream pagination metadata through projection', async () => {
+    nextResponse = {
+      status: 200,
+      body: {
+        data: [
+          {
+            id: 'b1',
+            title: 't',
+            status: 'open',
+            priority: 'low',
+            created_at: '2026-05-01T00:00:00Z',
+            project_id: PROJECT,
+          },
+        ],
+        pagination: { page: 2, per_page: 10, total: 95, total_pages: 10 },
+      },
+    };
+    const ctx = await makeCtx();
+    const result = await tool('list_bugs').handler({ limit: 10 }, ctx);
+    const data = result.data as { data: unknown[]; pagination: Record<string, number> };
+    expect(data.pagination).toEqual({ page: 2, per_page: 10, total: 95, total_pages: 10 });
+    expect(data.data).toHaveLength(1);
+  });
+
   it('update_bug_status renames note to resolution_notes in the PATCH body', async () => {
     const ctx = await makeCtx();
     await tool('update_bug_status').handler(
