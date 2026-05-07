@@ -65,3 +65,13 @@ export function byteLength(value: unknown): number {
   if (value === undefined || value === null) return 0;
   return Buffer.byteLength(typeof value === 'string' ? value : JSON.stringify(value), 'utf8');
 }
+
+/**
+ * Serialize a tool result for MCP transport. Compact JSON only:
+ * pretty-printing inflates result_size_bytes ~25% with no agent benefit
+ * (agents don't care about indentation, and inflated bytes eat context
+ * budget). DO NOT pass `null, 2` here — there's a regression test.
+ */
+export function serializeResult(data: unknown): string {
+  return JSON.stringify(data);
+}

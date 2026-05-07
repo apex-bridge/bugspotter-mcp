@@ -102,6 +102,54 @@ describe('ask schema', () => {
   });
 });
 
+describe('serialization (regression guard)', () => {
+  it('serializeResult emits compact JSON — no indentation', async () => {
+    const { serializeResult } = await import('../src/instrumentation/logger.js');
+    const out = serializeResult({ a: 1, b: { c: [2, 3] } });
+    // No newlines, no double-spaces — would only appear if someone reverted
+    // to JSON.stringify(data, null, 2) for a debug session and forgot.
+    expect(out).not.toContain('\n');
+    expect(out).not.toMatch(/ {2,}/);
+    expect(out).toBe('{"a":1,"b":{"c":[2,3]}}');
+  });
+});
+
+describe('defensive projections (null/undefined hits)', () => {
+  it('list_bugs returns empty array when upstream sends non-object items', async () => {
+    const listBugsTool = TOOLS.find((t) => t.name === 'list_bugs')!;
+    // Build a minimal ctx that returns the bad payload and traps no HTTP call.
+    const fakeCtx = {
+      client: {
+        request: async () => ({ data: [null, undefined, 'a string', 42, true] }),
+      },
+      logger: { write: async () => {} },
+      config: { defaultProject: 'p' },
+    } as Parameters<typeof listBugsTool.handler>[1];
+    const result = await listBugsTool.handler({}, fakeCtx);
+    const bugs = (result.data as { data: Record<string, unknown>[] }).data;
+    expect(bugs).toHaveLength(5);
+    // Each non-object input should map to an empty {} — survives, doesn't crash.
+    for (const b of bugs) expect(b).toEqual({});
+  });
+
+  it('search_bugs survives non-object hits in upstream results array', async () => {
+    const searchTool = TOOLS.find((t) => t.name === 'search_bugs')!;
+    const fakeCtx = {
+      client: {
+        request: async () => ({ results: [null, 'oops', { id: 'real', title: 't', status: 'open', priority: 'low' }] }),
+      },
+      logger: { write: async () => {} },
+      config: { defaultProject: 'p' },
+    } as Parameters<typeof searchTool.handler>[1];
+    const result = await searchTool.handler({ query: 'x' }, fakeCtx);
+    const hits = (result.data as { results: Record<string, unknown>[] }).results;
+    expect(hits).toHaveLength(3);
+    expect(hits[0]).toEqual({});
+    expect(hits[1]).toEqual({});
+    expect(hits[2]!.id).toBe('real');
+  });
+});
+
 describe('PII redaction', () => {
   it('redacts emails', () => {
     expect(redactPii('contact alice@example.com please')).toBe(

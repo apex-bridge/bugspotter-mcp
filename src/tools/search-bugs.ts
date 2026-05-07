@@ -22,6 +22,19 @@ const SEARCH_FIELDS = [
 ] as const;
 const EXCERPT_MAX = 240;
 
+// Build a clean excerpt: collapse runs of whitespace (newlines, tabs,
+// double-spaces from "Steps to reproduce:\n\n1. …" style descriptions)
+// into single spaces, then cut on a word boundary if one exists in the
+// last ~40 chars of the window. Keeps the excerpt readable to the agent
+// without wasting characters on \n\n.
+function makeExcerpt(s: string): string {
+  const flat = s.replace(/\s+/g, ' ').trim();
+  if (flat.length <= EXCERPT_MAX) return flat;
+  const cut = flat.slice(0, EXCERPT_MAX);
+  const lastSpace = cut.lastIndexOf(' ');
+  return (lastSpace > EXCERPT_MAX - 40 ? cut.slice(0, lastSpace) : cut) + '…';
+}
+
 function thinSearchHit(hit: unknown): Record<string, unknown> {
   if (!hit || typeof hit !== 'object') return {};
   const src = hit as Record<string, unknown>;
@@ -44,10 +57,7 @@ function thinSearchHit(hit: unknown): Record<string, unknown> {
   const hasUsableExcerpt = typeof out.excerpt === 'string' && out.excerpt.trim().length > 0;
   if (!hasUsableExcerpt && typeof src.description === 'string' && src.description.trim()) {
     delete out.excerpt; // drop any null/empty value before assigning
-    out.excerpt =
-      src.description.length > EXCERPT_MAX
-        ? src.description.slice(0, EXCERPT_MAX) + '…'
-        : src.description;
+    out.excerpt = makeExcerpt(src.description);
   }
   return out;
 }

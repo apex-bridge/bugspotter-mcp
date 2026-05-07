@@ -19,7 +19,13 @@ const addFormats: AddFormatsFn =
 
 import { loadConfig } from './config.js';
 import { BugSpotterClient } from './client/bugspotter-client.js';
-import { Logger, redactArgs, byteLength, type LogRecord } from './instrumentation/logger.js';
+import {
+  Logger,
+  redactArgs,
+  byteLength,
+  serializeResult,
+  type LogRecord,
+} from './instrumentation/logger.js';
 import { TOOLS } from './tools/index.js';
 import { UpstreamError, type ToolDefinition, type ToolContext } from './types.js';
 
@@ -98,9 +104,7 @@ async function dispatch(
 
   try {
     const result = await tool.handler(args, ctx);
-    // Compact JSON only — pretty-printing inflates result_size_bytes ~25%
-    // for no agent benefit (agents don't care about indentation).
-    const text = JSON.stringify(result.data);
+    const text = serializeResult(result.data);
     await ctx.logger.write({
       ...base,
       duration_ms: Date.now() - start,
@@ -130,11 +134,11 @@ async function dispatch(
       content: [
         {
           type: 'text',
-          text: JSON.stringify(
-            { error: message, status: upstream?.status ?? null, error_class: errorClass },
-            null,
-            2
-          ),
+          text: JSON.stringify({
+            error: message,
+            status: upstream?.status ?? null,
+            error_class: errorClass,
+          }),
         },
       ],
       isError: true,

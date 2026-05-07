@@ -13,7 +13,22 @@ interface ListBugsArgs {
 // errors, network logs, stack traces, replays) are dropped — agents must
 // use get_bug to drill into a specific bug. This keeps a list of 20 bugs
 // inside a single tool-result token budget.
-const LIST_FIELDS = ['id', 'title', 'status', 'priority', 'created_at', 'project_id'] as const;
+//
+// `updated_at` / `assignee` / `assigned_to` are included defensively —
+// if upstream returns them they answer "what changed recently?" /
+// "what's X working on?" cheaply; if not, the `if (k in src)` guard
+// skips them silently.
+const LIST_FIELDS = [
+  'id',
+  'title',
+  'status',
+  'priority',
+  'created_at',
+  'updated_at',
+  'project_id',
+  'assignee',
+  'assigned_to',
+] as const;
 
 function thinBug(bug: unknown): Record<string, unknown> {
   if (!bug || typeof bug !== 'object') return {};
