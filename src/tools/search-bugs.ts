@@ -50,14 +50,17 @@ function thinSearchHit(hit: unknown): Record<string, unknown> {
     if (k in src) out[k] = src[k];
   }
 
-  // Synthesize excerpt from description if upstream omitted it OR returned
-  // an unusable value (null / empty / whitespace-only). Without this guard,
-  // agents get an empty `excerpt` field and have to call get_bug just to
-  // learn what the bug is about.
+  // Excerpt handling. Upstream may send a usable excerpt, an unusable one
+  // (null / empty / whitespace-only), or none at all. We want exactly one
+  // outcome: either a clean string, or no `excerpt` key in the projection.
+  // Never pass a null/empty upstream value through to the agent.
   const hasUsableExcerpt = typeof out.excerpt === 'string' && out.excerpt.trim().length > 0;
-  if (!hasUsableExcerpt && typeof src.description === 'string' && src.description.trim()) {
-    delete out.excerpt; // drop any null/empty value before assigning
-    out.excerpt = makeExcerpt(src.description);
+  if (!hasUsableExcerpt) {
+    if (typeof src.description === 'string' && src.description.trim()) {
+      out.excerpt = makeExcerpt(src.description);
+    } else {
+      delete out.excerpt; // load-bearing: drops null/empty/whitespace upstream value
+    }
   }
   return out;
 }

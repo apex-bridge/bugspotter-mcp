@@ -202,6 +202,27 @@ describe('end-to-end tool dispatch against mocked BugSpotter', () => {
     }
   });
 
+  it('search_bugs drops null upstream excerpt when description is also unusable', async () => {
+    nextResponse = {
+      status: 200,
+      body: {
+        results: [
+          { id: 'b', title: 't', status: 'open', priority: 'low', excerpt: null },
+          { id: 'c', title: 't', status: 'open', priority: 'low', excerpt: '   ', description: '\n  \t' },
+          { id: 'd', title: 't', status: 'open', priority: 'low', excerpt: '' },
+        ],
+      },
+    };
+    const ctx = await makeCtx();
+    const result = await tool('search_bugs').handler({ query: 'x' }, ctx);
+    const hits = (result.data as { results: Record<string, unknown>[] }).results;
+    // No usable excerpt + no usable description = no excerpt key at all.
+    // The bad upstream value must not leak through to the agent.
+    for (const h of hits) {
+      expect(h).not.toHaveProperty('excerpt');
+    }
+  });
+
   it('search_bugs normalizes id from upstream bug_id and drops the duplicate field', async () => {
     nextResponse = {
       status: 200,
