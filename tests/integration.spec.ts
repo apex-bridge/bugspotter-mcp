@@ -113,6 +113,70 @@ describe('end-to-end tool dispatch against mocked BugSpotter', () => {
     expect(received[0]!.url).not.toContain('from_date');
   });
 
+  it('list_bugs strips heavy fields and returns a thin projection', async () => {
+    const fatBug = {
+      id: 'bug-1',
+      title: 'Login button does nothing',
+      status: 'open',
+      priority: 'high',
+      created_at: '2026-05-05T10:00:00Z',
+      project_id: PROJECT,
+      // Heavy fields that should be dropped — these are what blow context budgets in prod.
+      description: 'x'.repeat(10_000),
+      metadata: { browser: { ua: 'y'.repeat(2000) } },
+      console_errors: Array(50).fill({ msg: 'TypeError: undefined' }),
+      network_logs: Array(40).fill({ url: 'https://api/...', status: 500 }),
+      stack_trace: 'a'.repeat(8000),
+      replay_url: 'https://replays/...',
+    };
+    nextResponse = { status: 200, body: { data: [fatBug, fatBug, fatBug] } };
+    const ctx = await makeCtx();
+    const result = await tool('list_bugs').handler({ limit: 3 }, ctx);
+    const data = result.data as { data: Record<string, unknown>[] };
+    expect(data.data).toHaveLength(3);
+    for (const b of data.data) {
+      expect(Object.keys(b).sort()).toEqual(
+        ['created_at', 'id', 'priority', 'project_id', 'status', 'title']
+      );
+      expect(b).not.toHaveProperty('description');
+      expect(b).not.toHaveProperty('metadata');
+      expect(b).not.toHaveProperty('console_errors');
+      expect(b).not.toHaveProperty('network_logs');
+      expect(b).not.toHaveProperty('stack_trace');
+    }
+    // Sanity-check the size collapse: thin record < 200 bytes; fat record > 25KB.
+    const projectedBytes = Buffer.byteLength(JSON.stringify(data.data[0]));
+    expect(projectedBytes).toBeLessThan(200);
+  });
+
+  it('search_bugs strips heavy fields and synthesizes excerpt from description', async () => {
+    const longDescription = 'Connection reset on POST /orders. ' + 'x'.repeat(2000);
+    const fatHit = {
+      id: 'bug-2',
+      title: 'POST /orders flaky',
+      status: 'open',
+      priority: 'high',
+      score: 0.92,
+      project_id: PROJECT,
+      description: longDescription,
+      console_errors: Array(20).fill({ msg: 'noise' }),
+      stack_trace: 'z'.repeat(5000),
+    };
+    nextResponse = { status: 200, body: { results: [fatHit] } };
+    const ctx = await makeCtx();
+    const result = await tool('search_bugs').handler({ query: 'orders flaky' }, ctx);
+    const data = result.data as { results: Record<string, unknown>[] };
+    expect(data.results).toHaveLength(1);
+    const hit = data.results[0]!;
+    expect(hit).not.toHaveProperty('description');
+    expect(hit).not.toHaveProperty('console_errors');
+    expect(hit).not.toHaveProperty('stack_trace');
+    expect(hit.excerpt).toBeTypeOf('string');
+    expect((hit.excerpt as string).length).toBeLessThanOrEqual(241);
+    expect(hit.score).toBe(0.92);
+    expect(hit.title).toBe('POST /orders flaky');
+  });
+
   it('update_bug_status renames note to resolution_notes in the PATCH body', async () => {
     const ctx = await makeCtx();
     await tool('update_bug_status').handler(

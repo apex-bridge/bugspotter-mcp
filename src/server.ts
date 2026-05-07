@@ -98,7 +98,9 @@ async function dispatch(
 
   try {
     const result = await tool.handler(args, ctx);
-    const text = JSON.stringify(result.data, null, 2);
+    // Compact JSON only — pretty-printing inflates result_size_bytes ~25%
+    // for no agent benefit (agents don't care about indentation).
+    const text = JSON.stringify(result.data);
     await ctx.logger.write({
       ...base,
       duration_ms: Date.now() - start,
