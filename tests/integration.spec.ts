@@ -265,6 +265,34 @@ describe('end-to-end tool dispatch against mocked BugSpotter', () => {
     expect(hits[3]).not.toHaveProperty('id');
   });
 
+  it('search_bugs falls through to id when bug_id is empty/whitespace/wrong-type', async () => {
+    nextResponse = {
+      status: 200,
+      body: {
+        results: [
+          // bug_id is an empty string — the naive `??` doesn't fall through, so this exercises pickId().
+          { bug_id: '', id: 'real-1', title: 't', status: 'open', priority: 'low' },
+          // bug_id is whitespace-only — same trap, different shape.
+          { bug_id: '   ', id: 'real-2', title: 't', status: 'open', priority: 'low' },
+          // bug_id is wrong-type (boolean) — fall through to id.
+          { bug_id: false, id: 'real-3', title: 't', status: 'open', priority: 'low' },
+          // bug_id is a usable string with surrounding whitespace — trimmed.
+          { bug_id: '  bug-4  ', id: 'other', title: 't', status: 'open', priority: 'low' },
+          // Both unusable — no id at all (rather than '   ' silently breaking get_bug).
+          { bug_id: '   ', id: '   ', title: 't', status: 'open', priority: 'low' },
+        ],
+      },
+    };
+    const ctx = await makeCtx();
+    const result = await tool('search_bugs').handler({ query: 'x' }, ctx);
+    const hits = (result.data as { results: Record<string, unknown>[] }).results;
+    expect(hits[0]!.id).toBe('real-1');
+    expect(hits[1]!.id).toBe('real-2');
+    expect(hits[2]!.id).toBe('real-3');
+    expect(hits[3]!.id).toBe('bug-4');
+    expect(hits[4]).not.toHaveProperty('id');
+  });
+
   it('list_bugs preserves upstream pagination metadata through projection', async () => {
     nextResponse = {
       status: 200,
