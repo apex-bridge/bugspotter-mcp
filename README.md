@@ -2,7 +2,12 @@
 
 An [MCP](https://modelcontextprotocol.io/) server that exposes 6 [BugSpotter](https://bugspotter.io/) operations to AI agents (Claude Code, Claude Desktop, Cursor, etc.).
 
-Self-hosted. No data leaves your network — the server speaks to your own BugSpotter instance and that's it.
+**Two ways to run it:**
+
+- **Stdio (per-user, self-hosted)** — the AI client spawns `bugspotter-mcp` as a subprocess; the API key lives in env. Standard MCP install path. Good for individuals and self-hosted teams.
+- **HTTP (multi-tenant, hosted)** — one process serves many users; each request carries its own `Authorization: Bearer bgs_<key>`. Designed for teams behind a single hosted endpoint. New in v0.3.
+
+Either way, no data leaves your network — the server speaks to your own BugSpotter instance and that's it.
 
 ## Architecture at a glance
 
@@ -63,6 +68,8 @@ Copy `.env.example` to `.env` and fill in your BugSpotter URL + API key.
 
 ## Environment variables
 
+### Stdio mode (`bugspotter-mcp`)
+
 | Var | Required | Notes |
 |---|---|---|
 | `BUGSPOTTER_BASE_URL` | yes | e.g. `http://localhost:3000`, `https://api.kz.bugspotter.io`, or your self-hosted URL |
@@ -70,7 +77,34 @@ Copy `.env.example` to `.env` and fill in your BugSpotter URL + API key.
 | `BUGSPOTTER_DEFAULT_PROJECT` | no | UUID; lets agents call `search_bugs` / `ask` without specifying `project_id` |
 | `LOG_DIR` | no | Where JSONL behavioral logs go. Defaults to `./logs/` |
 
-The API key is sent in the `X-API-Key` header. The `Authorization: Bearer …` header is reserved for dashboard-user JWTs and is not used here.
+In stdio mode the API key is sent to BugSpotter in the `X-API-Key` header.
+
+### HTTP mode (`bugspotter-mcp-http`)
+
+| Var | Required | Notes |
+|---|---|---|
+| `BUGSPOTTER_BASE_URL` | yes | Same as above. The HTTP server itself is multi-tenant; this is the upstream URL it dispatches to. |
+| `PORT` | no | Listening port. Default `8080`. |
+| `LOG_DIR` | no | Same as above. |
+| `MCP_SKIP_AUTH_VERIFY` | no | Set to `1` to skip the on-initialize auth probe against BugSpotter. Useful for tests against mock upstreams. |
+
+In HTTP mode the per-tenant key is **not** in env — each MCP request carries `Authorization: Bearer bgs_<key>` and (optionally) `X-Project-ID: <uuid>`. The server hashes the key (`sha256(key)[:12]`) into the JSONL log; raw keys never persist.
+
+## Run as a hosted service
+
+Build the Docker image and deploy behind your TLS terminator (nginx, Caddy, Traefik, …):
+
+```bash
+docker build -t bugspotter-mcp .
+docker run --rm -p 8080:8080 \
+  -e BUGSPOTTER_BASE_URL=https://api.kz.bugspotter.io \
+  -v /var/log/bugspotter-mcp:/var/log/bugspotter-mcp \
+  bugspotter-mcp
+```
+
+Health check: `GET /health` (no auth). Endpoint: `POST /mcp` (with `Authorization: Bearer bgs_<key>`).
+
+Sessions are bound to the auth that initialized them — presenting a known `Mcp-Session-Id` with a different Bearer is rejected with 403. Stale sessions are GC'd by an in-process sweeper (TTL = 30 min default).
 
 ## Connect from a client
 
