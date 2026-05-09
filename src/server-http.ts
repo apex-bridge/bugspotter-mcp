@@ -114,9 +114,9 @@ function authMiddleware(req: Request, res: Response, next: NextFunction): void {
   next();
 }
 
-// ───── Build a Server (one per session — see comment) ────────────────────
+// ───── Build a Server — one instance per session ─────────────────────────
 //
-// We create a fresh `Server` instance per session, not a single shared one.
+// We create a fresh `Server` instance per session, NOT a single shared one.
 // The MCP SDK's `Server.connect(transport)` binds the transport into the
 // server's internal `_transport` slot — calling `connect` twice replaces
 // the previous transport rather than additively serving both, so a shared
@@ -144,32 +144,22 @@ export function buildServer(logger: Logger): Server {
   server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     const apiKey = extra.authInfo?.token;
     const sessionHash = (extra.authInfo?.extra?.sessionHash as string | undefined) ?? 'unknown';
-    const projectId = extra.authInfo?.extra?.projectId as string | undefined;
     if (!apiKey) throw new McpError(ErrorCode.InvalidRequest, 'no api key in this session');
 
-    // The shared client cache (set up by the HTTP route) lives on extra
-    // via authInfo.extra; we look it up there. Falls back to constructing
-    // one on demand if (somehow) missing.
-    const cachedClient = extra.authInfo?.extra?.client as ToolContext['client'] | undefined;
-    const cachedConfig = extra.authInfo?.extra?.config as Config | undefined;
-    const client = cachedClient ?? buildSessionClient(
-      {
-        baseUrl: cachedConfig?.baseUrl ?? '',
-        defaultProject: projectId,
-        logDir: cachedConfig?.logDir ?? './logs',
-        timeoutMs: 10_000,
-        retryAttempts: 3,
-      },
-      apiKey
-    );
-    const config: Config = cachedConfig ?? {
-      baseUrl: '',
-      apiKey,
-      defaultProject: projectId,
-      logDir: './logs',
-      timeoutMs: 10_000,
-      retryAttempts: 3,
-    };
+    // The HTTP route layer is contracted to populate authInfo.extra with
+    // a cached BugSpotterClient + per-request Config before forwarding
+    // to the transport. If either is missing, that contract has been
+    // broken — fail loudly rather than silently constructing a client
+    // with a hollow `baseUrl: ''` (which axios would resolve against
+    // the MCP server's own host, an even worse failure mode).
+    const client = extra.authInfo?.extra?.client as ToolContext['client'] | undefined;
+    const config = extra.authInfo?.extra?.config as Config | undefined;
+    if (!client || !config) {
+      throw new McpError(
+        ErrorCode.InternalError,
+        'session client/config not initialized — HTTP route layer did not populate authInfo.extra'
+      );
+    }
     const ctx: ToolContext = { client, logger, config };
 
     return dispatch(req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>, ctx, sessionHash);
@@ -297,9 +287,10 @@ export function buildApp(deps: AppDeps): express.Express {
         res.status(status).json({ error });
         return;
       }
-      // Inject the cached client + config into authInfo.extra so the
-      // shared Server's tool handler can reuse it instead of building
-      // a fresh axios per call.
+      // Inject the cached client + per-request config into authInfo.extra
+      // so the per-session Server's tool handler can reuse the cached
+      // axios while the live X-Project-ID header still flows through to
+      // the per-call ToolContext.config.
       presenting.extra = {
         ...(presenting.extra ?? {}),
         client: found.state.client,
@@ -320,8 +311,13 @@ export function buildApp(deps: AppDeps): express.Express {
     if (!deps.config.skipAuthVerify) {
       const v = await verifyAuth(deps.config.baseUrl, presenting.token);
       if (!v.ok) {
-        res.status(v.status === 403 ? 403 : 401).json({
-          error: 'auth verification failed',
+        // 401/403 from upstream → key really is bad; surface as auth error.
+        // Anything else (502, timeout, network) → upstream is degraded; surface
+        // as 502 Bad Gateway so the client can distinguish "fix your key" from
+        // "retry later" and not falsely tell the user their key is invalid.
+        const isAuthFailure = v.status === 401 || v.status === 403;
+        res.status(isAuthFailure ? (v.status as 401 | 403) : 502).json({
+          error: isAuthFailure ? 'auth verification failed' : 'upstream verification unavailable',
           reason: v.reason,
           upstream_status: v.status,
         });
@@ -334,23 +330,39 @@ export function buildApp(deps: AppDeps): express.Express {
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
     });
+
+    // Pre-arm cleanup: if the transport closes BEFORE we register the
+    // session (early client disconnect, server crash, handler throw),
+    // we still need to release whatever the SDK allocated. Once
+    // `register()` is called below, it will replace this onclose with
+    // its own (which also drops the session from the store).
+    let registered = false;
+    transport.onclose = () => {
+      if (!registered) {
+        // Transport closed before we got a session id. Nothing to clean
+        // up in the store; the SDK handles its own resources.
+      }
+    };
+
     const server = makeServer();
     await server.connect(transport);
 
     const cfg = clientConfigFor(deps.config, presenting.token, presenting.extra?.projectId as string | undefined);
     const client = buildSessionClient(
-      {
-        baseUrl: cfg.baseUrl,
-        defaultProject: cfg.defaultProject,
-        logDir: cfg.logDir,
-        timeoutMs: cfg.timeoutMs,
-        retryAttempts: cfg.retryAttempts,
-      },
+      { baseUrl: cfg.baseUrl, timeoutMs: cfg.timeoutMs, retryAttempts: cfg.retryAttempts },
       presenting.token
     );
     presenting.extra = { ...(presenting.extra ?? {}), client, config: cfg };
 
-    await transport.handleRequest(req, res, req.body);
+    try {
+      await transport.handleRequest(req, res, req.body);
+    } catch (err) {
+      // handleRequest threw before assigning a sessionId or before we
+      // could register. Tear the transport down explicitly; whatever
+      // partial state the SDK held is now garbage.
+      await transport.close?.().catch(() => {});
+      throw err;
+    }
 
     if (transport.sessionId) {
       deps.store.register({
@@ -358,6 +370,12 @@ export function buildApp(deps: AppDeps): express.Express {
         sessionHash: presentingHash,
         client,
       });
+      registered = true;
+    } else {
+      // Transport finished the request but no session id was assigned —
+      // shouldn't happen on a successful initialize, but if it does we
+      // shouldn't leak the transport.
+      await transport.close?.().catch(() => {});
     }
   });
 
@@ -384,6 +402,21 @@ export function buildApp(deps: AppDeps): express.Express {
       await found.state.transport.handleRequest(req, res);
     });
   }
+
+  // Terminal JSON error handler. Without this, Express 5 forwards async
+  // rejections (including malformed JSON bodies and overflow from
+  // express.json's `limit`) to the default error handler which serves
+  // an HTML stack trace — useless to MCP SDK clients that expect JSON.
+  // Make sure every error response is content-type application/json
+  // with a structured shape.
+  app.use((err: Error & { status?: number; statusCode?: number }, _req: Request, res: Response, _next: NextFunction) => {
+    if (res.headersSent) return;
+    const status = err.status ?? err.statusCode ?? 500;
+    res.status(status).json({
+      error: err.message || 'internal error',
+      code: status,
+    });
+  });
 
   return app;
 }

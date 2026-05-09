@@ -34,8 +34,18 @@ export interface SessionStoreOptions {
 const DEFAULT_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_SWEEP_MS = 5 * 60 * 1000;
 
+/**
+ * Anonymized identity for the API key. Used as the session-auth binding
+ * tag and as the `session_id` field in JSONL behavioral logs.
+ *
+ * Width = 32 hex chars (128 bits). Earlier versions used 12 chars (~48
+ * bits) which is fine against accidental collision but uncomfortable in
+ * a multi-tenant hosted endpoint at scale. Widening costs nothing
+ * (a few bytes per session in memory, one log line) and matches the
+ * entropy of a UUID.
+ */
 export function hashKey(token: string): string {
-  return createHash('sha256').update(token).digest('hex').slice(0, 12);
+  return createHash('sha256').update(token).digest('hex').slice(0, 32);
 }
 
 export class SessionStore {
@@ -128,7 +138,26 @@ export class SessionStore {
 /**
  * Build a per-session BugSpotterClient. Keeps the axios instance alive
  * for the session's lifetime (one client per tenant, not per request).
+ *
+ * Only the fields BugSpotterClient actually reads (baseUrl, timeoutMs,
+ * retryAttempts, plus the apiKey passed separately) need to be supplied.
+ * `defaultProject` lives on the per-request `ToolContext.config`, not
+ * on the client — passing it here would be dead weight and creates the
+ * misleading impression that the client caches it across requests.
  */
-export function buildSessionClient(baseConfig: Omit<Config, 'apiKey'>, apiKey: string): BugSpotterClient {
-  return new BugSpotterClient({ ...baseConfig, apiKey });
+export interface SessionClientConfig {
+  baseUrl: string;
+  timeoutMs: number;
+  retryAttempts: number;
+}
+
+export function buildSessionClient(cfg: SessionClientConfig, apiKey: string): BugSpotterClient {
+  return new BugSpotterClient({
+    apiKey,
+    baseUrl: cfg.baseUrl,
+    timeoutMs: cfg.timeoutMs,
+    retryAttempts: cfg.retryAttempts,
+    defaultProject: undefined,
+    logDir: '', // not used by the client itself; logger lives at server level
+  });
 }

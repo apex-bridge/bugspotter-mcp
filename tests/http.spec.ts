@@ -382,6 +382,130 @@ describe('HTTP transport — tool dispatch reaches upstream with correct key', (
   });
 });
 
+describe('HTTP transport — auth pre-verification (fail-fast)', () => {
+  // These tests don't reuse the default harness because they need
+  // skipAuthVerify: false to actually exercise the verify path.
+  async function startWithVerify(): Promise<TestHarness> {
+    const logDir = await mkdtemp(path.join(os.tmpdir(), 'bgs-mcp-verify-'));
+    const logger = new Logger(logDir);
+    const store = new SessionStore({ sessionTtlMs: 60_000, sweepIntervalMs: 60_000 });
+    const app = buildApp({
+      config: {
+        port: 0,
+        baseUrl: upstreamUrl,
+        logDir,
+        timeoutMs: 2000,
+        retryAttempts: 1,
+        skipAuthVerify: false, // <-- the point of this suite
+      },
+      logger,
+      store,
+    });
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise<void>((r) => server.once('listening', () => r()));
+    const addr = server.address();
+    if (!addr || typeof addr === 'string') throw new Error('no addr');
+    return {
+      url: `http://127.0.0.1:${addr.port}`,
+      store,
+      logDir,
+      close: async () => {
+        store.stopSweeper();
+        await new Promise<void>((resolve, reject) =>
+          server.close((err) => (err ? reject(err) : resolve()))
+        );
+        await rm(logDir, { recursive: true, force: true });
+      },
+    };
+  }
+
+  async function tryInitialize(harness: TestHarness, key: string): Promise<{ status: number; body: { error?: string; reason?: string; upstream_status?: number | null } }> {
+    const res = await fetch(`${harness.url}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: ACCEPT,
+        Authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2024-11-05',
+          capabilities: {},
+          clientInfo: { name: 'verify-test', version: '0' },
+        },
+      }),
+    });
+    // Errors return JSON; success returns SSE. Discriminate by content-type
+    // so tests can assert on either path without a parse-bombing happy case.
+    const ct = res.headers.get('content-type') ?? '';
+    if (ct.includes('application/json')) {
+      return { status: res.status, body: (await res.json()) as { error?: string; reason?: string } };
+    }
+    await res.text(); // drain body
+    return { status: res.status, body: {} };
+  }
+
+  it('returns 401 when upstream rejects the key with 401', async () => {
+    upstreamResponse = { status: 401, body: { message: 'invalid api key' } };
+    const h = await startWithVerify();
+    try {
+      const r = await tryInitialize(h, 'bgs_invalid_for_verify');
+      expect(r.status).toBe(401);
+      expect(r.body.error).toContain('auth verification failed');
+      expect(r.body.upstream_status).toBe(401);
+      // Initialize was rejected before any session was created.
+      expect(h.store.size()).toBe(0);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('returns 403 when upstream rejects the key with 403', async () => {
+    upstreamResponse = { status: 403, body: { message: 'forbidden' } };
+    const h = await startWithVerify();
+    try {
+      const r = await tryInitialize(h, 'bgs_no_scope');
+      expect(r.status).toBe(403);
+      expect(r.body.upstream_status).toBe(403);
+      expect(h.store.size()).toBe(0);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('returns 502 (NOT 401) when upstream is degraded — distinguishes "key bad" from "upstream broken"', async () => {
+    upstreamResponse = { status: 503, body: { message: 'service unavailable' } };
+    const h = await startWithVerify();
+    try {
+      const r = await tryInitialize(h, 'bgs_innocent_during_outage');
+      expect(r.status).toBe(502); // Bad Gateway, not 401
+      expect(r.body.error).toContain('upstream verification unavailable');
+      expect(r.body.upstream_status).toBe(503);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('proceeds with initialize when verify succeeds (200 from upstream)', async () => {
+    upstreamResponse = { status: 200, body: { data: [] } };
+    const h = await startWithVerify();
+    try {
+      const r = await tryInitialize(h, 'bgs_valid_for_verify');
+      // We don't get JSON back (we get SSE). 200 here means initialize
+      // proceeded past the verify gate.
+      expect(r.status).not.toBe(401);
+      expect(r.status).not.toBe(403);
+      expect(r.status).not.toBe(502);
+      expect(h.store.size()).toBe(1);
+    } finally {
+      await h.close();
+    }
+  });
+});
+
 describe('HTTP transport — TTL sweeper', () => {
   it('removes sessions whose lastActivity is older than ttl', async () => {
     const h = await startMcp();
