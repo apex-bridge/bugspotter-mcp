@@ -92,19 +92,24 @@ In HTTP mode the per-tenant key is **not** in env — each MCP request carries `
 
 ## Run as a hosted service
 
-Build the Docker image and deploy behind your TLS terminator (nginx, Caddy, Traefik, …):
+For a complete deployment (compose + reverse proxy + TLS), see **[`deploy/DEPLOYMENT.md`](deploy/DEPLOYMENT.md)**. Three deployment shapes are documented end-to-end:
+
+- **Standalone with Caddy** — fresh host, automatic Let's Encrypt
+- **Behind your existing nginx + certbot**
+- **Sidecar in an existing self-hosted BugSpotter compose**
+
+Quick start (standalone with Caddy):
 
 ```bash
-docker build -t bugspotter-mcp .
-docker run --rm -p 8080:8080 \
-  -e BUGSPOTTER_BASE_URL=https://api.kz.bugspotter.io \
-  -v /var/log/bugspotter-mcp:/var/log/bugspotter-mcp \
-  bugspotter-mcp
+cd deploy
+cp .env.example .env  # set MCP_DOMAIN, ACME_EMAIL, BUGSPOTTER_BASE_URL
+docker compose up -d
+curl https://mcp.kz.bugspotter.io/health
 ```
 
 Health check: `GET /health` (no auth). Endpoint: `POST /mcp` (with `Authorization: Bearer bgs_<key>`).
 
-Sessions are bound to the auth that initialized them — presenting a known `Mcp-Session-Id` with a different Bearer is rejected with 403. Stale sessions are GC'd by an in-process sweeper (TTL = 30 min default).
+Sessions are bound to the auth that initialized them — presenting a known `Mcp-Session-Id` with a different Bearer is rejected with 403. Stale sessions are GC'd by an in-process sweeper (TTL = 30 min default). Bad keys fail fast on initialize (401) before the MCP handshake completes.
 
 ## Connect from a client
 
