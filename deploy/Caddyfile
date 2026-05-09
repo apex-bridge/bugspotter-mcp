@@ -18,14 +18,23 @@
 
   # MCP endpoint — bearer-authenticated, JSON + SSE.
   # Streamable HTTP requires SSE, so disable Caddy's response buffering
-  # and bump the read/write timeouts past the default.
-  @mcp path /mcp /mcp/* /health
+  # and bump the read/write timeouts past the default. 600s matches the
+  # nginx.conf template; long-running tool calls (especially `ask`
+  # against Ollama) routinely take minutes.
+  #
+  # `/health/*` is reserved for future per-component probes (k8s
+  # readiness/liveness etc.); aligned with nginx.conf so adding them
+  # later is a server-side-only change.
+  @mcp path /mcp /mcp/* /health /health/*
   handle @mcp {
+    request_body {
+      max_size 4MB         # symmetry with express.json({ limit: '4mb' })
+    }
     reverse_proxy mcp:8080 {
-      flush_interval -1          # stream SSE without buffering
+      flush_interval -1    # stream SSE without buffering
       transport http {
-        read_timeout 30s
-        write_timeout 30s
+        read_timeout 600s
+        write_timeout 600s
         keepalive 30s
       }
       header_up Host {host}

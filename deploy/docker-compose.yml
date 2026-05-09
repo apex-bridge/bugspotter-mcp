@@ -81,9 +81,15 @@ services:
     depends_on:
       - mcp
     environment:
-      # The domain Caddy will serve TLS for. Override in .env.
-      MCP_DOMAIN: ${MCP_DOMAIN:?MCP_DOMAIN is required (e.g. mcp.kz.bugspotter.io)}
-      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required (any monitored mailbox)}
+      # The domain Caddy will serve TLS for, and the address Let's Encrypt
+      # uses for renewal warnings. Required for STANDALONE mode (Caddy
+      # active); ignored in SIDECAR mode (caddy service disabled by the
+      # `never` profile). Hence `:-` rather than `:?` — sidecar operators
+      # without these vars set should not get a compose validation error.
+      # See deploy/.env.example and deploy/DEPLOYMENT.md for which mode
+      # needs which vars.
+      MCP_DOMAIN: ${MCP_DOMAIN:-}
+      ACME_EMAIL: ${ACME_EMAIL:-}
     logging: *logging
     networks:
       - mcp

@@ -61,14 +61,16 @@ If you already terminate TLS with nginx + certbot:
 git clone https://github.com/apex-bridge/bugspotter-mcp.git
 cd bugspotter-mcp
 
-# 2. Run the container, exposing 8080 only on localhost
+# 2. Build, then run (two steps — `docker build -q` can emit BuildKit
+#    warnings to stdout in recent Docker versions, polluting `$()` capture)
+docker build -t bugspotter-mcp:local .
 docker run -d --name bugspotter-mcp \
   --restart unless-stopped \
   -p 127.0.0.1:8080:8080 \
   -e BUGSPOTTER_BASE_URL=https://api.kz.bugspotter.io \
   -e MCP_LOG_FORMAT=json \
   -v bugspotter-mcp-logs:/var/log/bugspotter-mcp \
-  $(docker build -q .)
+  bugspotter-mcp:local
 
 # 3. Drop deploy/nginx.conf into /etc/nginx/conf.d/bugspotter-mcp.conf
 #    (replace MCP_DOMAIN placeholder), then:
