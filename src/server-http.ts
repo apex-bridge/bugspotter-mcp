@@ -432,6 +432,37 @@ function clientConfigFor(http: HttpConfig, apiKey: string, projectId: string | u
   };
 }
 
+// ───── Ops logging (stdout/stderr; distinct from the JSONL behavioral log) ─
+
+/**
+ * Emit a lifecycle / ops log line. Two formats:
+ *   - "text" (default) — human-readable, single line for `docker logs` tailing.
+ *   - "json"           — one-line JSON for log shippers (Loki, Vector, Fluentd).
+ * Picked via `MCP_LOG_FORMAT` env. Behavioral / per-call logs are independent
+ * and always JSONL on disk; this helper is for the server's own lifecycle.
+ *
+ * Stream choice: info/warn → stdout (where log shippers expect lifecycle
+ * events), error → stderr (Unix convention; preserves the "exit code != 0
+ * implies stderr noise" pattern for fatal exits). Both interleave fine in
+ * `docker logs` for human tailing.
+ */
+type LogLevel = 'info' | 'warn' | 'error';
+function logEvent(level: LogLevel, msg: string, fields: Record<string, unknown> = {}): void {
+  const format = process.env.MCP_LOG_FORMAT === 'json' ? 'json' : 'text';
+  const line =
+    format === 'json'
+      ? JSON.stringify({ ts: new Date().toISOString(), level, msg, ...fields })
+      : `[bugspotter-mcp-http] ${level.toUpperCase()} ${msg}${
+          Object.keys(fields).length
+            ? ' ' + Object.entries(fields).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(' ')
+            : ''
+        }`;
+  // eslint-disable-next-line no-console
+  if (level === 'error') console.error(line);
+  // eslint-disable-next-line no-console
+  else console.log(line);
+}
+
 // ───── Entry point ────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -443,15 +474,16 @@ async function main(): Promise<void> {
   store.startSweeper();
 
   const httpServer = app.listen(config.port, () => {
-    // eslint-disable-next-line no-console
-    console.error(
-      `[bugspotter-mcp-http] :${config.port}  upstream=${config.baseUrl}  log_dir=${config.logDir}`
-    );
+    logEvent('info', 'listening', {
+      port: config.port,
+      upstream: config.baseUrl,
+      log_dir: config.logDir,
+      log_format: process.env.MCP_LOG_FORMAT === 'json' ? 'json' : 'text',
+    });
   });
 
   const shutdown = (sig: string): void => {
-    // eslint-disable-next-line no-console
-    console.error(`[bugspotter-mcp-http] ${sig} — shutting down`);
+    logEvent('info', 'shutting down', { signal: sig });
     store.stopSweeper();
     httpServer.close(() => process.exit(0));
     setTimeout(() => process.exit(1), 5000).unref();
@@ -468,8 +500,13 @@ const invokedDirectly =
   import.meta.url === pathToFileURL(process.argv[1]).href;
 if (invokedDirectly) {
   main().catch((err) => {
-    // eslint-disable-next-line no-console
-    console.error('[bugspotter-mcp-http] fatal:', err);
+    // Emit the stack alongside the message — fatals at startup (bind
+    // failure, missing env, ESM import bug, …) are exactly when a bare
+    // .message is least useful for debugging.
+    logEvent('error', 'fatal', {
+      message: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+    });
     process.exit(1);
   });
 }

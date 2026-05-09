@@ -1,0 +1,68 @@
+# Caddy config for bugspotter-mcp.
+#
+# Substituted env vars:
+#   {$MCP_DOMAIN}    — the public domain (e.g. mcp.kz.bugspotter.io)
+#   {$ACME_EMAIL}    — Let's Encrypt contact address
+#
+# Caddy automatically obtains and renews a certificate for {$MCP_DOMAIN}
+# via Let's Encrypt as long as the host is reachable on port 80.
+
+{
+  email {$ACME_EMAIL}
+  # Uncomment for staging certs (rate-limit-friendly while testing):
+  # acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+{$MCP_DOMAIN} {
+  encode gzip
+
+  # MCP endpoint — bearer-authenticated, JSON + SSE.
+  # Streamable HTTP requires SSE, so disable Caddy's response buffering
+  # and bump the read/write timeouts past the default. 600s matches the
+  # nginx.conf template; long-running tool calls (especially `ask`
+  # against Ollama) routinely take minutes.
+  #
+  # `/health/*` is reserved for future per-component probes (k8s
+  # readiness/liveness etc.); aligned with nginx.conf so adding them
+  # later is a server-side-only change.
+  @mcp path /mcp /mcp/* /health /health/*
+  handle @mcp {
+    request_body {
+      max_size 4MB         # symmetry with express.json({ limit: '4mb' })
+    }
+    reverse_proxy mcp:8080 {
+      flush_interval -1    # stream SSE without buffering
+      transport http {
+        read_timeout 600s
+        write_timeout 600s
+        keepalive 30s
+      }
+      header_up Host {host}
+      header_up X-Real-IP {remote_host}
+      header_up X-Forwarded-For {remote_host}
+      header_up X-Forwarded-Proto {scheme}
+    }
+  }
+
+  # Anything else → 404 with a structured response. Don't leak that there's
+  # an internal service here.
+  handle {
+    respond "{\"error\":\"not found\"}" 404 {
+      close
+    }
+    header Content-Type application/json
+  }
+
+  # Modest hardening — no point exposing version in headers.
+  header {
+    -Server
+    Strict-Transport-Security "max-age=15552000; includeSubDomains"
+    X-Content-Type-Options nosniff
+    Referrer-Policy no-referrer
+  }
+
+  log {
+    output stdout
+    format json
+  }
+}

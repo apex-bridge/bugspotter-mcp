@@ -1,0 +1,29 @@
+# Sidecar overlay — drop Caddy and join an external BugSpotter network.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.sidecar.yml up -d
+#
+# Set BUGSPOTTER_NETWORK to the name of the network your existing BugSpotter
+# compose creates (e.g. `bugspotter` for the bugspotter-deploy stack).
+#
+# In sidecar mode, expose the MCP service via your existing reverse proxy
+# (the one already terminating TLS for your other services) — don't run
+# the embedded Caddy here.
+
+services:
+  mcp:
+    networks:
+      - mcp
+      - bugspotter
+    # Sidecar mode publishes nothing externally — the host-network proxy
+    # talks to the container by service name across the shared network.
+    expose:
+      - "8080"
+
+  caddy:
+    profiles: ["never"]   # disable in sidecar mode
+
+networks:
+  bugspotter:
+    name: ${BUGSPOTTER_NETWORK:-bugspotter}
+    external: true

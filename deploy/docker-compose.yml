@@ -1,0 +1,104 @@
+# =============================================================================
+# bugspotter-mcp — hosted endpoint deployment
+# =============================================================================
+# Two modes:
+#
+#   1. STANDALONE — bugspotter-mcp + Caddy (TLS termination + Let's Encrypt).
+#      Use this if your BugSpotter backend lives elsewhere (e.g. SaaS at
+#      api.kz.bugspotter.io) and you just want an MCP gateway in front of it.
+#
+#   2. SIDECAR — bugspotter-mcp only, joining an external network defined by
+#      your existing BugSpotter docker-compose. Use this if you're already
+#      running BugSpotter in compose and want the MCP container on the same
+#      network. Override BUGSPOTTER_BASE_URL to the internal service name
+#      (e.g. http://bugspotter:3000).
+#
+# Standalone usage (recommended for SaaS-style mcp.kz.bugspotter.io):
+#   cp .env.example .env  &&  edit .env
+#   docker compose -f docker-compose.yml up -d
+#
+# Sidecar usage:
+#   docker compose -f docker-compose.yml -f docker-compose.sidecar.yml up -d
+# =============================================================================
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  mcp:
+    # Either build from source, or pull a pre-built image once a registry
+    # tag is published. Comment out one block.
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    # image: ghcr.io/apex-bridge/bugspotter-mcp:0.3.0
+    container_name: bugspotter-mcp
+    restart: unless-stopped
+    environment:
+      # ─── upstream BugSpotter ──────────────────────────────────────────
+      # SaaS:    BUGSPOTTER_BASE_URL=https://api.kz.bugspotter.io
+      # Sidecar: BUGSPOTTER_BASE_URL=http://bugspotter:3000
+      BUGSPOTTER_BASE_URL: ${BUGSPOTTER_BASE_URL:?BUGSPOTTER_BASE_URL is required}
+      # ─── HTTP listener ────────────────────────────────────────────────
+      PORT: "8080"
+      LOG_DIR: /var/log/bugspotter-mcp
+      # ─── production logging ───────────────────────────────────────────
+      # Set MCP_LOG_FORMAT=json to emit one-line structured logs to stdout
+      # in addition to the JSONL behavioral log on disk. Pick this up with
+      # any docker-logs-aware shipper (Loki promtail, Vector, Fluentd, …).
+      MCP_LOG_FORMAT: ${MCP_LOG_FORMAT:-json}
+    expose:
+      - "8080"
+    volumes:
+      - mcp_logs:/var/log/bugspotter-mcp
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging: *logging
+    networks:
+      - mcp
+
+  # Caddy — TLS termination + Let's Encrypt + simple reverse proxy. Pick this
+  # if you don't already run nginx/Traefik on the host. See deploy/Caddyfile
+  # for the routing config.
+  caddy:
+    image: caddy:2-alpine
+    container_name: bugspotter-mcp-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data         # ACME state, certs
+      - caddy_config:/config
+    depends_on:
+      - mcp
+    environment:
+      # The domain Caddy will serve TLS for, and the address Let's Encrypt
+      # uses for renewal warnings. Required for STANDALONE mode (Caddy
+      # active); ignored in SIDECAR mode (caddy service disabled by the
+      # `never` profile). Hence `:-` rather than `:?` — sidecar operators
+      # without these vars set should not get a compose validation error.
+      # See deploy/.env.example and deploy/DEPLOYMENT.md for which mode
+      # needs which vars.
+      MCP_DOMAIN: ${MCP_DOMAIN:-}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    logging: *logging
+    networks:
+      - mcp
+
+volumes:
+  mcp_logs:
+  caddy_data:
+  caddy_config:
+
+networks:
+  mcp:
+    driver: bridge
