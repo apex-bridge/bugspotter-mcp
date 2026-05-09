@@ -2,6 +2,8 @@ import type { BugSpotterClient } from './client/bugspotter-client.js';
 import type { Logger } from './instrumentation/logger.js';
 import type { Config } from './config.js';
 
+export type { Config };
+
 export interface ToolContext {
   client: BugSpotterClient;
   logger: Logger;
