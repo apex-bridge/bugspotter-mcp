@@ -1,0 +1,46 @@
+name: Deploy to Fly
+
+# Auto-deploy to https://mcp.kz.bugspotter.io on push to main.
+#
+# Requires repo secret FLY_API_TOKEN — an app-scoped deploy token issued by
+#   flyctl tokens create deploy --app bugspotter-mcp --expiry 8760h
+# (1-year expiry; rotate before that). Org tokens also work but app-scoped
+# is least-privilege.
+#
+# Path filter skips deploys for changes that don't affect the running image
+# (docs, deploy/* templates for self-host, LICENSE, etc.).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Dockerfile'
+      - 'fly.toml'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - '.github/workflows/fly-deploy.yml'
+  workflow_dispatch:
+
+# Serialize deploys — let an in-progress deploy finish rather than killing it
+# mid-machine-update, which can leave the app in a half-deployed state.
+concurrency:
+  group: deploy-fly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Deploy
+        run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
