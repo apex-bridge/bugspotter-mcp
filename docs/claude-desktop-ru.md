@@ -278,3 +278,5 @@ Desktop. Используйте JSON-конфиг с мостом `mcp-remote` �
 - [docs/use-cases.md](use-cases.md) — примеры сценариев использования.
 - [docs/troubleshooting.md](troubleshooting.md) — расширенный гайд по
   диагностике.
+- [docs/claude-desktop.md](claude-desktop.md) — English version of this
+  guide.
