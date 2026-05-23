@@ -1,0 +1,55 @@
+name: Deploy to Fly
+
+# Auto-deploy to https://mcp.kz.bugspotter.io on push to main.
+#
+# Requires repo secret FLY_API_TOKEN — an app-scoped deploy token issued by
+#   flyctl tokens create deploy --app bugspotter-mcp --expiry 8760h
+# (1-year expiry; rotate before that). Org tokens also work but app-scoped
+# is least-privilege.
+#
+# Path filter skips deploys for changes that don't affect the running image
+# (docs, deploy/* templates for self-host, LICENSE, etc.).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Dockerfile'
+      - 'fly.toml'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - '.github/workflows/fly-deploy.yml'
+  workflow_dispatch:
+
+# Serialize deploys — let an in-progress deploy finish rather than killing it
+# mid-machine-update, which can leave the app in a half-deployed state.
+concurrency:
+  group: deploy-fly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # No git operations after checkout; not persisting the GITHUB_TOKEN
+          # to .git/config shrinks the blast radius if a later step is ever
+          # compromised (zizmor: artipacked).
+          persist-credentials: false
+      # Pinned to the SHA that `master` / the `v1` tag resolved to on 2026-05-23.
+      # `@master` would be a moving target — a compromised default branch
+      # could exfiltrate FLY_API_TOKEN. Bump via Dependabot or by replacing
+      # the SHA + the date in the trailing comment.
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1 (2026-05-23)
+      - name: Deploy
+        run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
