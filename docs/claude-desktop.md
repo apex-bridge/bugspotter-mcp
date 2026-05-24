@@ -183,7 +183,7 @@ Once connected, Claude has access to six operations:
 
 | Tool | What it does | Required args | Useful options |
 |---|---|---|---|
-| `list_bugs` | Thin list for triage/overview — id, title, status, priority, timestamps | — (if `default_project` / `X-Project-Id` is set) | `status`, `priority`, `from_date`, `to_date`, `limit` (≤100) |
+| `list_bugs` | Thin list for triage/overview — id, title, status, priority, timestamps | — (if `BUGSPOTTER_DEFAULT_PROJECT` env var or `X-Project-Id` header is set) | `status`, `priority`, `from_date`, `to_date`, `limit` (≤100) |
 | `search_bugs` | Ranked natural-language search; returns thin cards with excerpt + score | `query` | `mode`: `fast` (vectors only) or `smart` (vectors + LLM rerank); `limit` (≤50) |
 | `get_bug` | Full bug card: description, console errors, network logs, stack | `bug_id` | — |
 | `find_similar` | Embedding-similarity neighbours — use before filing a new bug to avoid duplicates | `bug_id` | `threshold` (0–1, default 0.7), `limit` (≤20) |
