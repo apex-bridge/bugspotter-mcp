@@ -134,9 +134,9 @@ which mcp-remote        # macOS / Linux
       "args": [
         "https://mcp.kz.bugspotter.io/mcp",
         "--header",
-        "Authorization:Bearer bgs_<ваш-ключ>",
+        "Authorization: Bearer bgs_<ваш-ключ>",
         "--header",
-        "X-Project-Id:<uuid-проекта>"
+        "X-Project-Id: <uuid-проекта>"
       ]
     }
   }

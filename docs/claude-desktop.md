@@ -138,9 +138,9 @@ Note the path — you'll need it for `command`.
       "args": [
         "https://mcp.kz.bugspotter.io/mcp",
         "--header",
-        "Authorization:Bearer bgs_<your-key>",
+        "Authorization: Bearer bgs_<your-key>",
         "--header",
-        "X-Project-Id:<project-uuid>"
+        "X-Project-Id: <project-uuid>"
       ]
     }
   }
