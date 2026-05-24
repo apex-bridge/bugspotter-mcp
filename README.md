@@ -187,6 +187,8 @@ npm run test:integration # end-to-end against an in-process mock server
 - [`docs/use-cases.md`](docs/use-cases.md) — concrete agent workflows: triage, dedup, postmortem Q&A, …
 - [`docs/behavioral-logs.md`](docs/behavioral-logs.md) — log schema + analysis recipes (`jq` queries)
 - [`docs/troubleshooting.md`](docs/troubleshooting.md) — common errors and how to fix them
+- [`docs/claude-desktop.md`](docs/claude-desktop.md) — Claude Desktop setup (EN)
+- [`docs/claude-desktop-ru.md`](docs/claude-desktop-ru.md) — подключение к Claude Desktop (RU)
 
 ## License
 
