@@ -1,0 +1,36 @@
+name: CI
+
+# Typecheck + full test suite on every PR and push to main.
+#
+# `npm ci` is the same install the Dockerfile runs, so a package.json /
+# package-lock.json drift fails here instead of in the Fly deploy.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the Dockerfile base image.
+          node-version: 20
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - run: npm test
